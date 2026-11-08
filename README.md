@@ -46,7 +46,7 @@ micro-ROS ではドメインをクライアント（このファームウェア�
   `#ROS_DOMAIN_ID_ERR=<n>\n` を返し、再起動しない。以後はそのドメインで接続し、画面の `ROS domain` に出す。
   再起動するのは、セッション中のトランスポートにこの行が読まれると、リセットまでエージェントに応答しなくなる
   ことがあったため（再起動後は毎回つながった）。
-- onolab_ros2 の `vibration_monitor.launch.py` が、エージェントの前に `send_m5_domain_id.py` でこれを送る。
+- onolab_ros2 の `vibration_monitor.launch.py` が、`m5_micro_ros_agent.py` でエージェントの前にこれを送る。
 - まだ受け取っていなければ `-DROS_DOMAIN_ID`（既定 0）を使う。
 
 - micro_ros_platformio の初回ビルドで micro-ROS ライブラリを作る（数分）。PlatformIO の仮想環境

@@ -442,15 +442,21 @@ void load_domain_id() {
 void poll_domain_id() {
   static char line[32];
   static size_t len = 0;
+  static bool too_long = false;  // the line did not fit: drop it (never parse a truncated one)
   while (Serial.available() > 0) {
     const int c = Serial.read();
     if (c != '\n') {
-      if (c == '#') len = 0;  // a command starts here (ping bytes before it are dropped)
+      if (c == '#') len = 0, too_long = false;  // a command starts here (ping bytes are dropped)
       if (len < sizeof(line) - 1) line[len++] = static_cast<char>(c);
+      else too_long = true;
       continue;
     }
     line[len] = '\0';
     len = 0;
+    if (too_long) {
+      too_long = false;
+      continue;
+    }
     const size_t n = strlen(DOMAIN_PREFIX);
     if (strncmp(line, DOMAIN_PREFIX, n) != 0) continue;
     char *end = nullptr;
