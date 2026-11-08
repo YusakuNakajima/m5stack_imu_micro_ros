@@ -34,8 +34,9 @@ micro-ROS（シリアル）で ROS 2 Humble にブロック単位で配信する
 cd firmware
 pio run -e m5stack-core2 -t upload --upload-port /dev/ttyUSB1     # Core2: CP2104 (10c4:ea60)
 pio run -e m5stack-basic -t upload --upload-port /dev/ttyACM1     # Basic: CH9102 (1a86:55d4)
-# ROS_DOMAIN_ID はファームウェアに焼き込む（エージェントでは決まらない）。既定 0
-PLATFORMIO_BUILD_FLAGS="-DROS_DOMAIN_ID=12" pio run -e m5stack-basic -t upload
+# ROS_DOMAIN_ID はファームウェアに焼き込む（エージェントでは決まらない）。既定 0。
+# onolab のコンテナは IP 末尾から決める（研究室 LAN の 192.168.0.33 なら 33）ので、それに合わせる
+PLATFORMIO_BUILD_FLAGS="-DROS_DOMAIN_ID=33" pio run -e m5stack-core2 -t upload
 ```
 
 - micro_ros_platformio の初回ビルドで micro-ROS ライブラリを作る（数分）。PlatformIO の仮想環境
@@ -45,9 +46,11 @@ PLATFORMIO_BUILD_FLAGS="-DROS_DOMAIN_ID=12" pio run -e m5stack-basic -t upload
 ## ホスト側
 
 ```bash
-# micro-ROS エージェント（公式イメージ。ROS_DOMAIN_ID はファームウェア側の値になる）
-docker run -it --rm --net=host --device=/dev/ttyUSB1 microros/micro-ros-agent:humble \
-    serial --dev /dev/ttyUSB1 -b 921600
+# micro-ROS エージェント。onolab_ros2 ではワークスペースでビルドしてあり、
+# onolab_grinding_vibration の launch が自動で起動する。単体で動かすなら:
+ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB1 -b 921600
+# （公式イメージでもよい: docker run -it --rm --net=host --device=/dev/ttyUSB1 \
+#   microros/micro-ros-agent:humble serial --dev /dev/ttyUSB1 -b 921600）
 
 # メッセージをビルドして確認
 colcon build --packages-select m5stack_imu_msgs && source install/setup.bash
