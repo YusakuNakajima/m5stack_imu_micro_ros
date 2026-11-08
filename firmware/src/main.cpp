@@ -26,6 +26,7 @@
 
 #include <m5stack_imu_msgs/msg/accel_block.h>
 
+#include <Preferences.h>
 #include <esp_system.h>
 
 #ifndef SERIAL_BAUD
@@ -35,7 +36,8 @@
 #define IMU_INTERNAL 0
 #endif
 #ifndef ROS_DOMAIN_ID
-#define ROS_DOMAIN_ID 0  // must match the host's ROS_DOMAIN_ID (the agent does not set it)
+// Used only until the host has sent one (see "ROS domain ID" below). The agent cannot set it.
+#define ROS_DOMAIN_ID 0
 #endif
 
 namespace {
@@ -252,6 +254,20 @@ uint32_t last_sync_ms = 0;
 enum class AgentState { Waiting, Available, Connected, Disconnected };
 AgentState state = AgentState::Waiting;
 
+// ---------------------------------------------------------------- ROS domain ID
+// The micro-ROS client (this firmware), not the agent, picks the DDS domain. So that it
+// follows the host's ROS_DOMAIN_ID (which changes with the PC's IP address), the host sends
+//   "#ROS_DOMAIN_ID=<n>\n"   before it starts the agent, and this firmware answers
+//   "#ROS_DOMAIN_ID_OK=<n>\n", keeps <n> in NVS and restarts, so that every agent session
+// starts from a freshly booted micro-ROS client (the host's line can also reach the
+// micro-ROS transport, which was then seen to stop answering until a reset).
+// It is read only while waiting for the agent: the serial link then carries nothing else
+// but the agent pings, whose bytes do not form such a line and are discarded.
+constexpr int DOMAIN_ID_MAX = 232;  // highest domain ID ROS 2 accepts
+constexpr const char *DOMAIN_PREFIX = "#ROS_DOMAIN_ID=";
+Preferences prefs;
+int domain_id = ROS_DOMAIN_ID;
+
 // ---------------------------------------------------------------- display (core 1)
 // Accelerometer statistics of the blocks published since the last refresh (m/s^2).
 struct Stats {
@@ -309,6 +325,12 @@ void text_row(int y, int text_size, uint16_t color, const char *text) {
   d.print(text);
 }
 
+void draw_domain() {
+  char line[64];
+  snprintf(line, sizeof(line), "ROS domain %d  %s", domain_id, TOPIC);
+  text_row(Y_INFO2, 1, TFT_LIGHTGREY, line);
+}
+
 void draw_static() {
   auto &d = M5.Display;
   d.fillScreen(COLOR_BG);
@@ -320,8 +342,7 @@ void draw_static() {
   char line[64];
   snprintf(line, sizeof(line), "MPU6886 on %s, +-%d g, 4 kHz", IMU_WHERE, ACCEL_FS_G);
   text_row(Y_INFO1, 1, TFT_LIGHTGREY, line);
-  snprintf(line, sizeof(line), "ROS domain %d  %s", ROS_DOMAIN_ID, TOPIC);
-  text_row(Y_INFO2, 1, TFT_LIGHTGREY, line);
+  draw_domain();
   snprintf(line, sizeof(line), "board %d  reset: %s  boots: %lu", static_cast<int>(M5.getBoard()),
            reset_reason_text(), (unsigned long)boot_count);
   text_row(Y_BOOT, 1, TFT_LIGHTGREY, line);
@@ -372,7 +393,7 @@ bool create_entities() {
   allocator = rcl_get_default_allocator();
   rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
   if (rcl_init_options_init(&init_options, allocator) != RCL_RET_OK) return false;
-  if (rcl_init_options_set_domain_id(&init_options, ROS_DOMAIN_ID) != RCL_RET_OK) return false;
+  if (rcl_init_options_set_domain_id(&init_options, domain_id) != RCL_RET_OK) return false;
   if (rclc_support_init_with_options(&support, 0, nullptr, &init_options, &allocator) != RCL_RET_OK)
     return false;
   if (rclc_node_init_default(&node, "m5stack_imu", "", &support) != RCL_RET_OK) return false;
@@ -410,6 +431,44 @@ void publish(const Block &blk) {
   if (rcl_publish(&publisher, &msg, nullptr) == RCL_RET_OK) published++;
 }
 
+void load_domain_id() {
+  prefs.begin("m5imu", false);
+  domain_id = prefs.getInt("domain_id", ROS_DOMAIN_ID);
+}
+
+// Reads what the host sent while no agent session is open; see "ROS domain ID" above.
+void poll_domain_id() {
+  static char line[32];
+  static size_t len = 0;
+  while (Serial.available() > 0) {
+    const int c = Serial.read();
+    if (c != '\n') {
+      if (c == '#') len = 0;  // a command starts here (ping bytes before it are dropped)
+      if (len < sizeof(line) - 1) line[len++] = static_cast<char>(c);
+      continue;
+    }
+    line[len] = '\0';
+    len = 0;
+    const size_t n = strlen(DOMAIN_PREFIX);
+    if (strncmp(line, DOMAIN_PREFIX, n) != 0) continue;
+    char *end = nullptr;
+    const long id = strtol(line + n, &end, 10);
+    if (end == line + n || (*end != '\0' && *end != '\r') || id < 0 || id > DOMAIN_ID_MAX)
+      continue;
+    if (id != domain_id) {
+      domain_id = static_cast<int>(id);
+      prefs.putInt("domain_id", domain_id);
+      draw_domain();
+    }
+    Serial.printf("#ROS_DOMAIN_ID_OK=%d\n", domain_id);
+    Serial.flush();
+    text_row(Y_STATE, 2, TFT_YELLOW, "restarting...");
+    prefs.end();
+    delay(50);
+    esp_restart();
+  }
+}
+
 void fatal(const char *text) {
   text_row(Y_STATE, 2, TFT_RED, text);
   while (true) delay(1000);
@@ -431,6 +490,7 @@ void setup() {
   Serial.setTxBufferSize(8192);
   Serial.setRxBufferSize(1024);
   Serial.begin(SERIAL_BAUD);
+  load_domain_id();
   draw_static();
   text_row(Y_STATE, 2, TFT_YELLOW, "starting IMU...");
 
@@ -467,6 +527,7 @@ void loop() {
   const uint32_t now = millis();
   switch (state) {
     case AgentState::Waiting:
+      poll_domain_id();
       if (now - last_ping_ms > 500) {
         last_ping_ms = now;
         if (rmw_uros_ping_agent(100, 1) == RMW_RET_OK) state = AgentState::Available;

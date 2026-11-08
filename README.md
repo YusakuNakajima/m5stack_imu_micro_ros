@@ -34,10 +34,19 @@ micro-ROS（シリアル）で ROS 2 Humble にブロック単位で配信する
 cd firmware
 pio run -e m5stack-core2 -t upload --upload-port /dev/ttyUSB1     # Core2: CP2104 (10c4:ea60)
 pio run -e m5stack-basic -t upload --upload-port /dev/ttyACM1     # Basic: CH9102 (1a86:55d4)
-# ROS_DOMAIN_ID はファームウェアに焼き込む（エージェントでは決まらない）。既定 0。
-# onolab のコンテナは IP 末尾から決める（研究室 LAN の 192.168.0.33 なら 33）ので、それに合わせる
-PLATFORMIO_BUILD_FLAGS="-DROS_DOMAIN_ID=33" pio run -e m5stack-core2 -t upload
 ```
+
+### ROS ドメイン
+
+micro-ROS ではドメインをクライアント（このファームウェア）が決め、エージェントでは変えられない。
+ホストの `ROS_DOMAIN_ID` は IP で変わることがあるので、焼き込まずにホストから受け取る:
+
+- エージェント待ちの間、シリアルで `#ROS_DOMAIN_ID=<n>\n`（0–232）を受け取ると `#ROS_DOMAIN_ID_OK=<n>\n` を返し、
+  NVS に保存して再起動する（約 3 秒）。以後はそのドメインで接続し、画面の `ROS domain` に出す。
+  再起動するのは、セッション中のトランスポートにこの行が読まれると、リセットまでエージェントに応答しなくなる
+  ことがあったため（再起動後は毎回つながった）。
+- onolab_ros2 の `vibration_monitor.launch.py` が、エージェントの前に `send_m5_domain_id.py` でこれを送る。
+- まだ受け取っていなければ `-DROS_DOMAIN_ID`（既定 0）を使う。
 
 - micro_ros_platformio の初回ビルドで micro-ROS ライブラリを作る（数分）。PlatformIO の仮想環境
   `~/.platformio/penv` が必要で、その中の empy は **3.3.4**（4.x だと `em.BUFFERED_OPT` で失敗する）。
