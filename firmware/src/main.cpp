@@ -291,6 +291,24 @@ const char *reset_reason_text() {
   }
 }
 
+// Fixed rows (320 x 240). Every row is cleared before it is drawn, and no text may be wider
+// than the screen (size 1 = 6 px per character, size 2 = 12 px), or it wraps onto the next row.
+constexpr int Y_INFO1 = 28, Y_INFO2 = 38, Y_STATE = 50, Y_RATE = 72, Y_SENT = 92, Y_LOST = 112;
+constexpr int Y_AXIS0 = 138, AXIS_STEP = 28, Y_BOOT = 218, Y_HINT = 230;
+
+void clear_row(int y, int text_size, uint16_t bg = COLOR_BG) {
+  M5.Display.fillRect(0, y, 320, 8 * text_size, bg);
+}
+
+void text_row(int y, int text_size, uint16_t color, const char *text) {
+  auto &d = M5.Display;
+  clear_row(y, text_size);
+  d.setTextSize(text_size);
+  d.setTextColor(color, COLOR_BG);
+  d.setCursor(4, y);
+  d.print(text);
+}
+
 void draw_static() {
   auto &d = M5.Display;
   d.fillScreen(COLOR_BG);
@@ -299,58 +317,53 @@ void draw_static() {
   d.setTextColor(TFT_WHITE, TFT_NAVY);
   d.setCursor(4, 4);
   d.print("M5 IMU micro-ROS");
-  d.setTextColor(TFT_LIGHTGREY, COLOR_BG);
-  d.setTextSize(1);
-  d.setCursor(4, 30);
-  d.printf("MPU6886 (%s) +-%dg, domain %d, %s", IMU_WHERE, ACCEL_FS_G, ROS_DOMAIN_ID, TOPIC);
-  d.setCursor(4, 206);
-  d.printf("board id %d (M5Unified), display %dx%d", static_cast<int>(M5.getBoard()), d.width(), d.height());
-  d.setCursor(4, 216);
-  d.printf("last reset: %s, boots since power on: %lu", reset_reason_text(), (unsigned long)boot_count);
+  char line[64];
+  snprintf(line, sizeof(line), "MPU6886 on %s, +-%d g, 4 kHz", IMU_WHERE, ACCEL_FS_G);
+  text_row(Y_INFO1, 1, TFT_LIGHTGREY, line);
+  snprintf(line, sizeof(line), "ROS domain %d  %s", ROS_DOMAIN_ID, TOPIC);
+  text_row(Y_INFO2, 1, TFT_LIGHTGREY, line);
+  snprintf(line, sizeof(line), "board %d  reset: %s  boots: %lu", static_cast<int>(M5.getBoard()),
+           reset_reason_text(), (unsigned long)boot_count);
+  text_row(Y_BOOT, 1, TFT_LIGHTGREY, line);
+  text_row(Y_HINT, 1, TFT_LIGHTGREY, "axis: mean m/s^2, vibration RMS m/s^2 (bar 0-2)");
 }
 
 // state: one line, coloured; numbers below; refreshed every DISPLAY_PERIOD_MS
 void draw_dynamic(const char *state_text, uint16_t state_color, double elapsed_s) {
-  auto &d = M5.Display;
-  d.setTextSize(2);
-  d.setTextColor(state_color, COLOR_BG);
-  d.setCursor(4, 44);
-  d.printf("%-20s", state_text);
-
-  d.setTextColor(TFT_WHITE, COLOR_BG);
-  d.setCursor(4, 68);
-  d.printf("rate %7.1f Hz       ", sample_rate_hz);
-  d.setCursor(4, 88);
-  d.printf("sent %5.1f blk/s     ", elapsed_s > 0 ? blocks_since_refresh / elapsed_s : 0.0);
+  char line[64];
+  text_row(Y_STATE, 2, state_color, state_text);
+  snprintf(line, sizeof(line), "rate %.1f Hz", sample_rate_hz);
+  text_row(Y_RATE, 2, TFT_WHITE, line);
+  snprintf(line, sizeof(line), "sent %.1f blk/s", elapsed_s > 0 ? blocks_since_refresh / elapsed_s : 0.0);
+  text_row(Y_SENT, 2, TFT_WHITE, line);
   const bool lost = fifo_overflows || queue_overflows;
-  d.setTextColor(lost ? TFT_RED : TFT_GREEN, COLOR_BG);
-  d.setCursor(4, 108);
-  d.printf("lost fifo %lu queue %lu   ", (unsigned long)fifo_overflows, (unsigned long)queue_overflows);
+  snprintf(line, sizeof(line), "lost fifo %lu queue %lu", (unsigned long)fifo_overflows,
+           (unsigned long)queue_overflows);
+  text_row(Y_LOST, 2, lost ? TFT_RED : TFT_GREEN, line);
 
   const char *names[3] = {"x", "y", "z"};
+  auto &d = M5.Display;
   for (int a = 0; a < 3; ++a) {
-    const int y = 136 + a * 34;
+    const int y = Y_AXIS0 + a * AXIS_STEP;
     double mean = 0, rms = 0;
     if (stats.n > 0) {
       mean = stats.sum[a] / stats.n;
       rms = sqrt(fmax(stats.sumsq[a] / stats.n - mean * mean, 0.0));  // AC RMS (gravity removed)
     }
-    d.setTextColor(TFT_WHITE, COLOR_BG);
-    d.setTextSize(2);
-    d.setCursor(4, y);
     if (stats.n > 0)
-      d.printf("%s %+6.2f %5.3f", names[a], mean, rms);
+      snprintf(line, sizeof(line), "%s %+6.2f %5.3f", names[a], mean, rms);  // 15 chars = 180 px
     else
-      d.printf("%s   ---    --- ", names[a]);
-    const int bar_x = 200, bar_w = 116;
+      snprintf(line, sizeof(line), "%s   ---    ---", names[a]);
+    clear_row(y, 2);
+    d.setTextSize(2);
+    d.setTextColor(TFT_WHITE, COLOR_BG);
+    d.setCursor(4, y);
+    d.print(line);
+    const int bar_x = 196, bar_w = 120;
     const int len = static_cast<int>(fmin(rms / RMS_FULL_SCALE_M_S2, 1.0) * bar_w);
     d.fillRect(bar_x, y, len, 16, TFT_ORANGE);
     d.fillRect(bar_x + len, y, bar_w - len, 16, TFT_DARKGREY);
   }
-  d.setTextSize(1);
-  d.setTextColor(TFT_LIGHTGREY, COLOR_BG);
-  d.setCursor(4, 230);
-  d.print("axis: mean m/s^2, vibration RMS m/s^2 (bar: 0-2)");
   stats = Stats();
   blocks_since_refresh = 0;
 }
@@ -398,10 +411,7 @@ void publish(const Block &blk) {
 }
 
 void fatal(const char *text) {
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(TFT_RED, COLOR_BG);
-  M5.Display.setCursor(4, 100);
-  M5.Display.println(text);
+  text_row(Y_STATE, 2, TFT_RED, text);
   while (true) delay(1000);
 }
 
@@ -422,10 +432,7 @@ void setup() {
   Serial.setRxBufferSize(1024);
   Serial.begin(SERIAL_BAUD);
   draw_static();
-  M5.Display.setTextSize(2);
-  M5.Display.setCursor(4, 68);
-  M5.Display.setTextColor(TFT_YELLOW, COLOR_BG);
-  M5.Display.print("starting IMU...");
+  text_row(Y_STATE, 2, TFT_YELLOW, "starting IMU...");
 
 #if !IMU_INTERNAL
   // M5.begin does not start Ex_I2C: on the Basic, Port A shares the internal bus and worked
@@ -438,7 +445,7 @@ void setup() {
   sample_rate_hz = measure_rate_hz();
 
   queue = xQueueCreate(QUEUE_BLOCKS, sizeof(Block));
-  if (queue == nullptr) fatal("no memory for the block queue");
+  if (queue == nullptr) fatal("no memory for queue");
   xTaskCreatePinnedToCore(imu_task, "imu", 8192, nullptr, 5, nullptr, 0);
 
   set_microros_serial_transports(Serial);
