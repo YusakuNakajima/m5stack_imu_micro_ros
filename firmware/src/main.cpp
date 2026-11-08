@@ -1,4 +1,6 @@
-// M5Stack Basic (v2.6) + M5Stack IMU Unit (MPU6886) on Port A -> micro-ROS (serial).
+// M5Stack Core2 (or Basic v2.6) + M5Stack IMU Unit (MPU6886) on Port A -> micro-ROS (serial).
+// Port A is GPIO32/33 on the Core2 and GPIO21/22 on the Basic; M5Unified's Ex_I2C picks the
+// board's pins. Build with -DIMU_INTERNAL=1 to read the Core2's built-in MPU6886 instead.
 //
 // Publishes m5stack_imu_msgs/msg/AccelBlock on /m5stack_imu/accel_block:
 //   SAMPLES_PER_BLOCK consecutive accelerometer samples at the MPU6886's 4 kHz output
@@ -28,6 +30,9 @@
 
 #ifndef SERIAL_BAUD
 #define SERIAL_BAUD 921600
+#endif
+#ifndef IMU_INTERNAL
+#define IMU_INTERNAL 0
 #endif
 #ifndef ROS_DOMAIN_ID
 #define ROS_DOMAIN_ID 0  // must match the host's ROS_DOMAIN_ID (the agent does not set it)
@@ -63,12 +68,20 @@ constexpr uint8_t REG_WHO_AM_I = 0x75;
 constexpr uint8_t WHO_AM_I_MPU6886 = 0x19;
 constexpr size_t FIFO_SIZE_BYTES = 1024;
 
+#if IMU_INTERNAL
+#define IMU_BUS M5.In_I2C
+#define IMU_WHERE "internal"
+#else
+#define IMU_BUS M5.Ex_I2C
+#define IMU_WHERE "Port A"
+#endif
+
 bool reg_write(uint8_t reg, uint8_t value) {
-  return M5.Ex_I2C.writeRegister8(MPU_ADDR, reg, value, I2C_FREQ_HZ);
+  return IMU_BUS.writeRegister8(MPU_ADDR, reg, value, I2C_FREQ_HZ);
 }
 
 bool reg_read(uint8_t reg, uint8_t *buf, size_t len) {
-  return M5.Ex_I2C.readRegister(MPU_ADDR, reg, buf, len, I2C_FREQ_HZ);
+  return IMU_BUS.readRegister(MPU_ADDR, reg, buf, len, I2C_FREQ_HZ);
 }
 
 int fifo_count() {
@@ -289,7 +302,9 @@ void draw_static() {
   d.setTextColor(TFT_LIGHTGREY, COLOR_BG);
   d.setTextSize(1);
   d.setCursor(4, 30);
-  d.printf("MPU6886 +-%dg, domain %d, %s", ACCEL_FS_G, ROS_DOMAIN_ID, TOPIC);
+  d.printf("MPU6886 (%s) +-%dg, domain %d, %s", IMU_WHERE, ACCEL_FS_G, ROS_DOMAIN_ID, TOPIC);
+  d.setCursor(4, 206);
+  d.printf("board id %d (M5Unified), display %dx%d", static_cast<int>(M5.getBoard()), d.width(), d.height());
   d.setCursor(4, 216);
   d.printf("last reset: %s, boots since power on: %lu", reset_reason_text(), (unsigned long)boot_count);
 }
@@ -397,8 +412,11 @@ void setup() {
   boot_count++;
   auto cfg = M5.config();
   cfg.serial_baudrate = 0;   // Serial is started below, with a larger TX buffer
-  cfg.internal_imu = false;  // Basic v2.6 has none; the IMU Unit is driven here
+  cfg.internal_imu = false;  // the MPU6886 is driven here (M5Unified must not configure it)
   M5.begin(cfg);
+  // brightness is not restored by every M5Unified board path; set it explicitly
+  M5.Display.wakeup();
+  M5.Display.setBrightness(160);
   // micro-ROS writes ~30 KB/s; a large TX buffer keeps rcl_publish from blocking on the UART
   Serial.setTxBufferSize(8192);
   Serial.setRxBufferSize(1024);
@@ -409,7 +427,12 @@ void setup() {
   M5.Display.setTextColor(TFT_YELLOW, COLOR_BG);
   M5.Display.print("starting IMU...");
 
-  if (!mpu_init()) fatal("MPU6886 not found on Port A");
+#if !IMU_INTERNAL
+  // M5.begin does not start Ex_I2C: on the Basic, Port A shares the internal bus and worked
+  // anyway, but on the Core2 Port A is a separate bus (GPIO32/33) that stays silent without this
+  M5.Ex_I2C.begin();
+#endif
+  if (!mpu_init()) fatal("MPU6886 not found (" IMU_WHERE ")");
   packet_bytes = detect_packet_bytes();
   if (packet_bytes < 0) fatal("FIFO packet size unknown");
   sample_rate_hz = measure_rate_hz();
