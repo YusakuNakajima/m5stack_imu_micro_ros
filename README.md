@@ -41,8 +41,9 @@ pio run -e m5stack-basic -t upload --upload-port /dev/ttyACM1     # Basic: CH910
 micro-ROS ではドメインをクライアント（このファームウェア）が決め、エージェントでは変えられない。
 ホストの `ROS_DOMAIN_ID` は IP で変わることがあるので、焼き込まずにホストから受け取る:
 
-- エージェント待ちの間、シリアルで `#ROS_DOMAIN_ID=<n>\n`（0–232）を受け取ると `#ROS_DOMAIN_ID_OK=<n>\n` を返し、
-  NVS に保存して再起動する（約 3 秒）。以後はそのドメインで接続し、画面の `ROS domain` に出す。
+- エージェント待ちの間、シリアルで `#ROS_DOMAIN_ID=<n>\n`（0–232）を受け取ると NVS に保存し、保存を読み戻して
+  確かめてから `#ROS_DOMAIN_ID_OK=<n>\n` を返して再起動する（約 3 秒）。保存できなければ
+  `#ROS_DOMAIN_ID_ERR=<n>\n` を返し、再起動しない。以後はそのドメインで接続し、画面の `ROS domain` に出す。
   再起動するのは、セッション中のトランスポートにこの行が読まれると、リセットまでエージェントに応答しなくなる
   ことがあったため（再起動後は毎回つながった）。
 - onolab_ros2 の `vibration_monitor.launch.py` が、エージェントの前に `send_m5_domain_id.py` でこれを送る。

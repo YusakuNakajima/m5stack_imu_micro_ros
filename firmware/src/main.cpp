@@ -258,7 +258,8 @@ AgentState state = AgentState::Waiting;
 // The micro-ROS client (this firmware), not the agent, picks the DDS domain. So that it
 // follows the host's ROS_DOMAIN_ID (which changes with the PC's IP address), the host sends
 //   "#ROS_DOMAIN_ID=<n>\n"   before it starts the agent, and this firmware answers
-//   "#ROS_DOMAIN_ID_OK=<n>\n", keeps <n> in NVS and restarts, so that every agent session
+//   "#ROS_DOMAIN_ID_OK=<n>\n" once <n> is stored in NVS ("#ROS_DOMAIN_ID_ERR=<n>\n" and no
+//   restart when it cannot be stored), and restarts, so that every agent session
 // starts from a freshly booted micro-ROS client (the host's line can also reach the
 // micro-ROS transport, which was then seen to stop answering until a reset).
 // It is read only while waiting for the agent: the serial link then carries nothing else
@@ -266,6 +267,7 @@ AgentState state = AgentState::Waiting;
 constexpr int DOMAIN_ID_MAX = 232;  // highest domain ID ROS 2 accepts
 constexpr const char *DOMAIN_PREFIX = "#ROS_DOMAIN_ID=";
 Preferences prefs;
+bool prefs_ok = false;  // NVS opened; without it a received domain cannot survive the restart
 int domain_id = ROS_DOMAIN_ID;
 
 // ---------------------------------------------------------------- display (core 1)
@@ -432,8 +434,8 @@ void publish(const Block &blk) {
 }
 
 void load_domain_id() {
-  prefs.begin("m5imu", false);
-  domain_id = prefs.getInt("domain_id", ROS_DOMAIN_ID);
+  prefs_ok = prefs.begin("m5imu", false);
+  if (prefs_ok) domain_id = prefs.getInt("domain_id", ROS_DOMAIN_ID);
 }
 
 // Reads what the host sent while no agent session is open; see "ROS domain ID" above.
@@ -455,11 +457,16 @@ void poll_domain_id() {
     const long id = strtol(line + n, &end, 10);
     if (end == line + n || (*end != '\0' && *end != '\r') || id < 0 || id > DOMAIN_ID_MAX)
       continue;
-    if (id != domain_id) {
-      domain_id = static_cast<int>(id);
-      prefs.putInt("domain_id", domain_id);
-      draw_domain();
+    // confirm only what is stored: the host starts the agent on the answer, and this value
+    // must still be in use after the restart
+    if (!prefs_ok || prefs.putInt("domain_id", static_cast<int32_t>(id)) != sizeof(int32_t) ||
+        prefs.getInt("domain_id", -1) != id) {
+      Serial.printf("#ROS_DOMAIN_ID_ERR=%ld\n", id);
+      text_row(Y_STATE, 2, TFT_RED, "domain not stored (NVS)");
+      continue;
     }
+    domain_id = static_cast<int>(id);
+    draw_domain();
     Serial.printf("#ROS_DOMAIN_ID_OK=%d\n", domain_id);
     Serial.flush();
     text_row(Y_STATE, 2, TFT_YELLOW, "restarting...");
